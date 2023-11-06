@@ -1,6 +1,7 @@
 import unittest
 from convert import make_structs
 
+
 class TestParse(unittest.TestCase):
     def test_parse_simple(self):
         parser_input = {"weight": None, "bias": None}

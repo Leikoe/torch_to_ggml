@@ -38,8 +38,7 @@ def make_structs(o):
 
 
 def c_gen(state_dict, model_name):
-    struct_members = {k: 'const ggml_tensor*;' for k in state_dict.keys()}
-    struct_members_str = "\n    ".join(map(lambda x: f"{x[0]}: {x[1]}", struct_members.items()))
+    code = ""
 
     # gen model AST
     model = {}
@@ -58,19 +57,10 @@ def c_gen(state_dict, model_name):
                 last = last[p]
 
     model_structs = make_structs(model)
-    print()
     for struct_name, struct_fields in model_structs.items():
         struct_fields_str = "\n    ".join(map(lambda x: f"{x[0]}: {x[1]};", struct_fields.items()))
-        print(STRUCT_TEMPLATE.format(struct_name=struct_name, struct_fields=struct_fields_str))
-
-    # def obj_to_struct(o, name):
-    #
-    #     if o is list:
-    #
-    #
-    #     code = STRUCT_TEMPLATE.format(struct_name=name, _struct_members_str)
-
-    code = STRUCT_TEMPLATE.format(struct_name=model_name, struct_fields=struct_members_str)
+        code += STRUCT_TEMPLATE.format(struct_name=struct_name, struct_fields=struct_fields_str)
+        code += "\n\n"
 
     return code
 
