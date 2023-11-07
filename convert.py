@@ -1,5 +1,7 @@
 import sys
+from typing import Dict
 
+import numpy as np
 import torch
 import gguf
 import numpy
@@ -12,6 +14,7 @@ STRUCT_TEMPLATE = """struct {struct_name} {{
 # https://stackoverflow.com/questions/651794/whats-the-best-way-to-initialize-a-dict-of-dicts-in-python
 class AutoVivification(dict):
     """Implementation of perl's autovivification feature."""
+
     def __getitem__(self, item):
         try:
             return dict.__getitem__(self, item)
@@ -20,19 +23,40 @@ class AutoVivification(dict):
             return value
 
 
-def make_structs(o):
+GGML_TENSOR_PTR = "struct ggml_tensor*"
+MAIN_STRUCT: str = "module"
+TAB_WIDTH = 4
+TAB = " " * TAB_WIDTH
+
+
+def make_structs(o: Dict) -> Dict[str, str]:
+    """
+    :param o: the model
+    :return: the structs used to represent the model in c
+    """
+
     structs = AutoVivification()
+
+    def get_module_add_structs(struct_name_to_struct_fields):
+        _main_struct = None
+        for struct_name, struct_fields in struct_name_to_struct_fields.items():
+            if struct_name == MAIN_STRUCT:
+                _main_struct = struct_fields
+                continue
+            structs[struct_name] = struct_fields  # FIXME: override is bad
+        return _main_struct
+
     for k in o.keys():
-        if type(o[k]) is dict and all(map(lambda x: x.isnumeric(), o[k].keys())):
-            arr_length = int(max(o[k].keys())) + 1
-            structs["main"][k] = f"{k.capitalize()}[{arr_length}]"
-            structs[k.capitalize()] = make_structs(o[k]["0"])["main"]
-        else:
-            if type(o[k]) is not dict:
-                structs["main"][k] = type(o[k])
+        if type(o[k]) is dict:
+            if all(map(lambda x: x.isnumeric(), o[k].keys())):
+                arr_length = int(max(o[k].keys())) + 1
+                structs[MAIN_STRUCT][k] = f"struct {k.capitalize()}[{arr_length}]"
+                structs[k.capitalize()] = get_module_add_structs(make_structs(o[k]["0"]))
             else:
-                structs["main"][k] = k.capitalize()
-                structs[k.capitalize()] = make_structs(o[k])["main"]
+                structs[MAIN_STRUCT][k] = f"struct {k.capitalize()}"
+                structs[k.capitalize()] = get_module_add_structs(make_structs(o[k]))
+        else:
+            structs[MAIN_STRUCT][k] = type(o[k])
 
     return structs
 
@@ -40,10 +64,14 @@ def make_structs(o):
 def c_gen(state_dict, model_name):
     code = ""
 
+    def k(line, tabs=0):
+        nonlocal code
+        code += f"{TAB * tabs}{line}\n"
+
     # gen model AST
     model = {}
-    for k, v in state_dict.items():
-        parts = k.split(".")
+    for param_name, v in state_dict.items():
+        parts = param_name.split(".")
 
         last = model
         for i in range(len(parts)):
@@ -56,28 +84,66 @@ def c_gen(state_dict, model_name):
             else:
                 last = last[p]
 
+    # gen model structs
     model_structs = make_structs(model)
     for struct_name, struct_fields in model_structs.items():
-        struct_fields_str = "\n    ".join(map(lambda x: f"{x[0]}: {x[1]};", struct_fields.items()))
+        if struct_name == MAIN_STRUCT:
+            struct_name = model_name
+
+        struct_fields = {k: (GGML_TENSOR_PTR if type is np.ndarray else type) for k, type in struct_fields.items()}
+
+        struct_fields_str = "\n    ".join(map(lambda x: f"{x[1]} {x[0]};", struct_fields.items()))
         code += STRUCT_TEMPLATE.format(struct_name=struct_name, struct_fields=struct_fields_str)
         code += "\n\n"
+
+    #gen model load function
+    code += f"""
+// returns a pointer to a loaded model struct. user is responsible of freeing it later
+struct {model_name}* {model_name}_model_load(const char *model_file, mnist_model & model) {{
+    struct {model_name} *model = malloc(sizeof(*model));
+    if (!model) {{
+        fprintf(stderr, "%s: malloc(sizeof(*model)) failed, Out of memory\\n", __func__);
+        return NULL;
+    }}
+
+    struct gguf_init_params params = {{
+        /*.no_alloc   =*/ false,
+        /*.ctx        =*/ &model.ctx,
+    }};
+    gguf_context * ctx = gguf_init_from_file(model_file, params);
+    if (!ctx) {{
+        fprintf(stderr, "%s: gguf_init_from_file() failed\\n", __func__);
+        return NULL;
+    }}
+"""
+
+    for param_name in state_dict.keys():
+        param_name_to_accessor = ""
+        for p in param_name.split("."):
+            if p.isnumeric():
+                param_name_to_accessor += f"[{p}]"
+            else:
+                param_name_to_accessor += f".{p}"
+
+        k(f'model{param_name_to_accessor} = ggml_get_tensor(model.ctx, "{param_name}");', tabs=1)
+
+    k("return model;\n}", tabs=1)
 
     return code
 
 
-def convert(model_path, output_model_path):
+def convert(model_path, output_model_path, model_name="mymodel"):
     state_dict = torch.load(model_path, map_location="cpu")
     state_dict = {k.replace("module.", ""): v for k, v in state_dict.items() if "module." in k}
 
-    gguf_writer = gguf.GGUFWriter(output_model_path, output_model_path)
+    gguf_writer = gguf.GGUFWriter(output_model_path, model_name)
 
-    code = c_gen(state_dict, "mymodel")
+    code = c_gen(state_dict, model_name)
     print(code)
-    return
 
     for param_name, param_value in state_dict.items():
-        print(param_name)
-        print(type(param_value.numpy()))
+        # print(param_name)
+        # print(type(param_value.numpy()))
         gguf_writer.add_tensor(param_name, param_value.numpy())
 
     # kernel1 = model.layers[0].weights[0].numpy()
@@ -113,4 +179,4 @@ def convert(model_path, output_model_path):
 
 
 if __name__ == '__main__':
-    convert(sys.argv[1], sys.argv[2])
+    convert(sys.argv[1], sys.argv[2], sys.argv[3])
