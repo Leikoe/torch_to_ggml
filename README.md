@@ -1,4 +1,4 @@
-# Torch to ggml
+# :fire: Torch to ggml
 
 a python tool to convert any (hopefully) pytorch model file to a gguf file 
 and generate as much of the c code to use it as possible.
