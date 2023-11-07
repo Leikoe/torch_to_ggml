@@ -1,10 +1,10 @@
-import sys
-from typing import Dict
+#!/usr/bin/env python
 
-import numpy as np
-import torch
+import sys
 import gguf
-import numpy
+import torch
+import numpy as np
+from typing import Dict
 
 STRUCT_TEMPLATE = """struct {struct_name} {{
     {struct_fields}
@@ -23,6 +23,7 @@ class AutoVivification(dict):
             return value
 
 
+DEFAULT_MODEL_NAME = "untitled"
 GGML_TENSOR_PTR = "struct ggml_tensor*"
 MAIN_STRUCT: str = "module"
 TAB_WIDTH = 4
@@ -62,7 +63,7 @@ def make_structs(o: Dict) -> Dict[str, str]:
 
 
 def c_gen(state_dict, model_name):
-    code = ""
+    code = '#include <stdio.h>\n#include <stdlib.h>\n#include "ggml/ggml.h"\n\n\n'
 
     def k(line, tabs=0):
         nonlocal code
@@ -86,6 +87,7 @@ def c_gen(state_dict, model_name):
 
     # gen model structs
     model_structs = make_structs(model)
+    model_structs[MAIN_STRUCT]["ctx"] = "struct ggml_context*"
     for struct_name, struct_fields in model_structs.items():
         if struct_name == MAIN_STRUCT:
             struct_name = model_name
@@ -96,7 +98,7 @@ def c_gen(state_dict, model_name):
         code += STRUCT_TEMPLATE.format(struct_name=struct_name, struct_fields=struct_fields_str)
         code += "\n\n"
 
-    #gen model load function
+    # gen model load function
     code += f"""
 // returns a pointer to a loaded model struct. user is responsible of freeing it later
 struct {model_name}* {model_name}_model_load(const char *model_file, mnist_model & model) {{
@@ -110,7 +112,7 @@ struct {model_name}* {model_name}_model_load(const char *model_file, mnist_model
         /*.no_alloc   =*/ false,
         /*.ctx        =*/ &model.ctx,
     }};
-    gguf_context * ctx = gguf_init_from_file(model_file, params);
+    gguf_context *ctx = gguf_init_from_file(model_file, params);
     if (!ctx) {{
         fprintf(stderr, "%s: gguf_init_from_file() failed\\n", __func__);
         return NULL;
@@ -127,23 +129,27 @@ struct {model_name}* {model_name}_model_load(const char *model_file, mnist_model
 
         k(f'model{param_name_to_accessor} = ggml_get_tensor(model.ctx, "{param_name}");', tabs=1)
 
+    k("")
     k("return model;\n}", tabs=1)
 
     return code
 
 
-def convert(model_path, output_model_path, model_name="mymodel"):
+def convert(model_path, output_model_path, model_name=DEFAULT_MODEL_NAME):
+    if model_name == DEFAULT_MODEL_NAME:
+        print(f"Warning: no provided model_name, default={DEFAULT_MODEL_NAME}")
+
     state_dict = torch.load(model_path, map_location="cpu")
     state_dict = {k.replace("module.", ""): v for k, v in state_dict.items() if "module." in k}
 
-    gguf_writer = gguf.GGUFWriter(output_model_path, model_name)
-
     code = c_gen(state_dict, model_name)
-    print(code)
+    c_output_path = f"./{model_name}.c"
+    with open(c_output_path, "w") as f:
+        f.write(code)
+        print(f"Model ggml code generated and saved to '{c_output_path}'")
 
+    gguf_writer = gguf.GGUFWriter(output_model_path, model_name)
     for param_name, param_value in state_dict.items():
-        # print(param_name)
-        # print(type(param_value.numpy()))
         gguf_writer.add_tensor(param_name, param_value.numpy())
 
     # kernel1 = model.layers[0].weights[0].numpy()
@@ -179,4 +185,11 @@ def convert(model_path, output_model_path, model_name="mymodel"):
 
 
 if __name__ == '__main__':
-    convert(sys.argv[1], sys.argv[2], sys.argv[3])
+    if len(sys.argv) < 3:
+        print(f"Usage: ./{sys.argv[0]} <path_to_pt_model> <path_to_output> [model_name]")
+        sys.exit(1)
+
+    if len(sys.argv) < 4:
+        convert(sys.argv[1], sys.argv[2])
+    else:
+        convert(sys.argv[1], sys.argv[2], sys.argv[3])
