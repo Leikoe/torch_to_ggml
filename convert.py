@@ -135,7 +135,7 @@ struct {model_name}* {model_name}_model_load(const char *model_file, mnist_model
     return code
 
 
-def convert(model_path, output_model_path, model_name=DEFAULT_MODEL_NAME):
+def convert(model_path, model_name=DEFAULT_MODEL_NAME):
     if model_name == DEFAULT_MODEL_NAME:
         print(f"Warning: no provided model_name, default={DEFAULT_MODEL_NAME}")
 
@@ -148,7 +148,8 @@ def convert(model_path, output_model_path, model_name=DEFAULT_MODEL_NAME):
         f.write(code)
         print(f"Model ggml code generated and saved to '{c_output_path}'")
 
-    gguf_writer = gguf.GGUFWriter(output_model_path, model_name)
+    gguf_output_path = f"./{model_name}.gguf"
+    gguf_writer = gguf.GGUFWriter(gguf_output_path, model_name)
     for param_name, param_value in state_dict.items():
         gguf_writer.add_tensor(param_name, param_value.numpy())
 
@@ -181,15 +182,15 @@ def convert(model_path, output_model_path, model_name=DEFAULT_MODEL_NAME):
     gguf_writer.write_kv_data_to_file()
     gguf_writer.write_tensors_to_file()
     gguf_writer.close()
-    print(f"Model converted and saved to '{output_model_path}'")
+    print(f"Model converted and saved to '{gguf_output_path}'")
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 3:
-        print(f"Usage: ./{sys.argv[0]} <path_to_pt_model> <path_to_output> [model_name]")
+    if len(sys.argv) < 2:
+        print(f"Usage: ./{sys.argv[0]} <path_to_output> [model_name]")
         sys.exit(1)
 
-    if len(sys.argv) < 4:
-        convert(sys.argv[1], sys.argv[2])
+    if len(sys.argv) < 3:
+        convert(sys.argv[1])
     else:
-        convert(sys.argv[1], sys.argv[2], sys.argv[3])
+        convert(sys.argv[1], sys.argv[2])
