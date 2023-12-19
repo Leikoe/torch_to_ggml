@@ -1,3 +1,5 @@
+**WARNING:** Project is abandonned and in a very early/unsuable state
+
 # :fire: Torch to ggml
 
 a python tool to convert any (hopefully) pytorch model file to a gguf file 
